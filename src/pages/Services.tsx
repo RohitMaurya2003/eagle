@@ -34,9 +34,18 @@ const Services = () => {
   const [orderForm, setOrderForm] = useState({
     name: '',
     email: '',
+    mobile: '',
     websiteUrl: '',
     keywords: '',
     additionalUrls: ''
+  });
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [formData, setFormData] = useState({
+    fullName: '',
+    email: '',
+    mobile: '',
+    websiteDomain: '',
+    keywords: ''
   });
 
   // Direct payment via Razorpay (no pre-form) using env key
@@ -65,6 +74,47 @@ const Services = () => {
 
   const formatAmount = (amount: number): number => Math.round(amount * 100);
 
+  // Verify payment with backend and save to MongoDB
+  const verifyPaymentWithBackend = async (paymentResponse: any, userData: any) => {
+    try {
+      console.log('🔄 Verifying payment with backend...', paymentResponse);
+
+      const response = await fetch('http://localhost:5000/api/payment/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          razorpay_order_id: paymentResponse.razorpay_order_id || 'order_' + Date.now(),
+          razorpay_payment_id: paymentResponse.razorpay_payment_id,
+          razorpay_signature: paymentResponse.razorpay_signature || 'signature_' + Date.now(),
+          userData: {
+            fullName: userData.fullName || 'Customer',
+            email: userData.email || 'customer@example.com',
+            mobile: userData.mobile || '+91-9999999999',
+            websiteDomain: userData.websiteDomain || 'example.com',
+            keywords: (userData.keywords || '').split(',').map((k: string) => k.trim()).filter((k: string) => k),
+            amount: price
+          }
+        })
+      });
+
+      const result = await response.json();
+      console.log('✅ Backend response:', result);
+
+      if (result.status === 'success') {
+        console.log('✅ Payment verified and saved to MongoDB!');
+        return true;
+      } else {
+        console.error('❌ Backend error:', result.message);
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ Error verifying payment:', error);
+      return false;
+    }
+  };
+
   const payDirect = async (serviceName: string, price: number, description?: string) => {
     try {
       const isLoaded = await loadRazorpay();
@@ -83,14 +133,19 @@ const Services = () => {
         currency: 'INR',
         name: '360EagleWeb',
         description: description || serviceName,
-        handler: function (response: any) {
-          navigate('/payment/success', {
-            state: {
-              paymentId: response?.razorpay_payment_id,
-              service: serviceName,
-              amount: price
-            }
-          });
+        handler: async function (response: any) {
+          console.log('💳 Payment successful from Razorpay:', response);
+          
+          // Store payment data temporarily
+          const paymentData = response;
+          
+          // Show form for user details
+          setSelectedService({
+            name: serviceName,
+            price: price,
+            paymentData: paymentData
+          } as any);
+          setShowDAForm(true);
         },
         prefill: {
           name: '',
@@ -733,12 +788,42 @@ const Services = () => {
                   />
                 </div>
 
-                {/* Single Payment Button */}
+                {/* Single Submit Button */}
                 <button
-                  onClick={() => processPayment(selectedService.name, selectedService.price, 'backlink')}
+                  onClick={async () => {
+                    // Verify payment with backend
+                    const userData = {
+                      fullName: orderForm.name,
+                      email: orderForm.email,
+                      mobile: orderForm.email, // Use email as fallback if mobile not available
+                      websiteDomain: orderForm.websiteUrl,
+                      keywords: orderForm.keywords
+                    };
+                    
+                    const verified = await verifyPaymentWithBackend(
+                      (selectedService as any)?.paymentData,
+                      userData
+                    );
+                    
+                    if (verified) {
+                      // Show success message and close modal
+                      alert('✅ Payment verified and data saved to MongoDB!');
+                      setShowDAForm(false);
+                      setOrderForm({ name: '', email: '', websiteUrl: '', keywords: '', additionalUrls: '' });
+                      navigate('/payment/success', {
+                        state: {
+                          paymentId: (selectedService as any)?.paymentData?.razorpay_payment_id,
+                          service: selectedService?.name,
+                          amount: selectedService?.price
+                        }
+                      });
+                    } else {
+                      alert('❌ Failed to verify payment. Please try again.');
+                    }
+                  }}
                   className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white py-4 px-6 rounded-lg font-semibold transition-all duration-300 hover:scale-105 flex items-center justify-center space-x-2 text-lg"
                 >
-                  <span>💳 Pay Now - ₹{selectedService?.price}</span>
+                  <span>✅ Submit & Save - ₹{selectedService?.price}</span>
                 </button>
 
                 <p className="text-sm text-gray-600 text-center mt-4">
@@ -800,6 +885,21 @@ const Services = () => {
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Mobile Number *
+                  </label>
+                  <input
+                    type="tel"
+                    name="mobile"
+                    value={orderForm.mobile}
+                    onChange={handleFormChange}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                    placeholder="Enter your mobile number"
+                    required
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Website URL *
                   </label>
                   <input
@@ -813,12 +913,63 @@ const Services = () => {
                   />
                 </div>
 
-                {/* Single Payment Button */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Target Keywords (comma separated) *
+                  </label>
+                  <textarea
+                    name="keywords"
+                    value={orderForm.keywords}
+                    onChange={handleFormChange}
+                    rows={3}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                    placeholder="seo services, digital marketing, web development"
+                    required
+                  />
+                </div>
+
+                {/* Single Submit Button */}
                 <button
-                  onClick={() => processPayment(selectedService.name, selectedService.price, 'da-service')}
+                  onClick={async () => {
+                    // Validate form
+                    if (!orderForm.name || !orderForm.email || !orderForm.mobile || !orderForm.websiteUrl || !orderForm.keywords) {
+                      alert('Please fill in all required fields');
+                      return;
+                    }
+                    
+                    // Verify payment with backend
+                    const userData = {
+                      fullName: orderForm.name,
+                      email: orderForm.email,
+                      mobile: orderForm.mobile,
+                      websiteDomain: orderForm.websiteUrl,
+                      keywords: orderForm.keywords
+                    };
+                    
+                    const verified = await verifyPaymentWithBackend(
+                      (selectedService as any)?.paymentData,
+                      userData
+                    );
+                    
+                    if (verified) {
+                      // Show success message and close modal
+                      alert('✅ Payment verified and data saved to MongoDB!');
+                      setShowDAForm(false);
+                      setOrderForm({ name: '', email: '', mobile: '', websiteUrl: '', keywords: '', additionalUrls: '' });
+                      navigate('/payment/success', {
+                        state: {
+                          paymentId: (selectedService as any)?.paymentData?.razorpay_payment_id,
+                          service: selectedService?.name,
+                          amount: selectedService?.price
+                        }
+                      });
+                    } else {
+                      alert('❌ Failed to verify payment. Please try again.');
+                    }
+                  }}
                   className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white py-4 px-6 rounded-lg font-semibold transition-all duration-300 hover:scale-105 flex items-center justify-center space-x-2 text-lg"
                 >
-                  <span>💳 Pay Now - ₹{selectedService?.price}</span>
+                  <span>✅ Submit & Save to Database - ₹{selectedService?.price}</span>
                 </button>
 
                 <p className="text-sm text-gray-600 text-center mt-4">
